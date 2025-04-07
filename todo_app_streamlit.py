@@ -14,7 +14,7 @@ class TodoList:
         if 'categories' not in st.session_state:
             st.session_state.categories = ["Work", "Personal", "Shopping", "Other"]
         if 'tags' not in st.session_state:
-            st.session_state.tags: Set[str] = set(self.db.get_all_tags(self.user_id))
+            st.session_state.tags = set(self.db.get_all_tags(self.user_id))
 
     def add_task(self, title: str, description: str = "", category: str = "Other", 
                  due_date: date = None, priority: str = "Medium", tags: List[str] = None,
@@ -342,7 +342,7 @@ def login_page():
 
 def main():
     """Main function to run the todo list application."""
-    # Initialize database
+    # Initialize database in session state if not already initialized
     if 'db' not in st.session_state:
         st.session_state.db = Database()
 
