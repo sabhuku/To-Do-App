@@ -262,7 +262,8 @@ def login_page():
                 st.session_state.user_id = user_id
                 st.session_state.username = username
                 st.success("Login successful!")
-                st.experimental_rerun()
+                # Instead of rerun, we'll let the main function handle the state change
+                return
             else:
                 st.error("Invalid username or password")
     
@@ -297,13 +298,15 @@ def main():
         login_page()
         return
 
+    # Clear the page and show the main app
+    st.empty()  # Clear the login page
     st.title(f"Todo List App - Welcome {st.session_state.username}!")
     
     # Add logout button
     if st.sidebar.button("Logout"):
         del st.session_state.user_id
         del st.session_state.username
-        st.experimental_rerun()
+        st.rerun()
         return
 
     todo_list = TodoList(st.session_state.db, st.session_state.user_id)
@@ -343,7 +346,7 @@ def main():
                     tags.append(new_tag)
                 todo_list.add_task(title, description, category, due_date, priority, tags, recurrence)
                 clear_form()
-                st.experimental_rerun()
+                st.rerun()
             else:
                 st.error("Task title is required!")
 
