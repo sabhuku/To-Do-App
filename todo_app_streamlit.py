@@ -262,8 +262,7 @@ def login_page():
                 st.session_state.user_id = user_id
                 st.session_state.username = username
                 st.success("Login successful!")
-                # Instead of rerun, we'll let the main function handle the state change
-                return
+                st.rerun()  # This will trigger a rerun and show the main app
             else:
                 st.error("Invalid username or password")
     
