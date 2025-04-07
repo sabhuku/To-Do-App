@@ -261,9 +261,12 @@ def login_page():
             if user_id:
                 st.session_state.user_id = user_id
                 user = st.session_state.db.get_user_by_id(user_id)
-                st.session_state.username = user["username"]
-                st.success("Login successful!")
-                st.rerun()  # This will trigger a rerun and show the main app
+                if user:
+                    st.session_state.username = user["username"]
+                    st.success("Login successful!")
+                    st.rerun()  # This will trigger a rerun and show the main app
+                else:
+                    st.error("User not found")
             else:
                 st.error("Invalid username/email or password")
     
