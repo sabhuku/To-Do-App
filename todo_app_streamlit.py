@@ -258,12 +258,16 @@ def login_page():
                 return
             
             try:
+                # Verify user credentials
                 user_id = st.session_state.db.verify_user(identifier, password)
                 if user_id:
+                    # Get user details
                     user = st.session_state.db.get_user_by_id(user_id)
                     if user:
+                        # Set session state
                         st.session_state.user_id = user_id
                         st.session_state.username = user["username"]
+                        st.session_state.email = user["email"]
                         st.success("Login successful!")
                         st.rerun()  # This will trigger a rerun and show the main app
                     else:
@@ -358,8 +362,6 @@ def main():
     if 'db' not in st.session_state:
         try:
             st.session_state.db = Database()
-            # The database is automatically initialized in the Database constructor
-            # No need to call init_db() or init_database() explicitly
         except Exception as e:
             st.error(f"Failed to initialize database: {str(e)}")
             return
@@ -377,6 +379,7 @@ def main():
     if st.sidebar.button("Logout"):
         del st.session_state.user_id
         del st.session_state.username
+        del st.session_state.email
         st.rerun()
         return
 
