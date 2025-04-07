@@ -257,18 +257,21 @@ def login_page():
                 st.error("Please enter both username/email and password")
                 return
             
-            user_id = st.session_state.db.verify_user(identifier, password)
-            if user_id:
-                st.session_state.user_id = user_id
-                user = st.session_state.db.get_user_by_id(user_id)
-                if user:
-                    st.session_state.username = user["username"]
-                    st.success("Login successful!")
-                    st.rerun()  # This will trigger a rerun and show the main app
+            try:
+                user_id = st.session_state.db.verify_user(identifier, password)
+                if user_id:
+                    user = st.session_state.db.get_user_by_id(user_id)
+                    if user:
+                        st.session_state.user_id = user_id
+                        st.session_state.username = user["username"]
+                        st.success("Login successful!")
+                        st.rerun()  # This will trigger a rerun and show the main app
+                    else:
+                        st.error("User not found")
                 else:
-                    st.error("User not found")
-            else:
-                st.error("Invalid username/email or password")
+                    st.error("Invalid username/email or password")
+            except Exception as e:
+                st.error(f"An error occurred during login: {str(e)}")
     
     with tab2:
         st.subheader("Register")
@@ -290,10 +293,13 @@ def login_page():
                 st.error("Please enter a valid email address")
                 return
             
-            if st.session_state.db.create_user(new_username, new_email, new_password):
-                st.success("Registration successful! Please login.")
-            else:
-                st.error("Username or email already exists")
+            try:
+                if st.session_state.db.create_user(new_username, new_email, new_password):
+                    st.success("Registration successful! Please login.")
+                else:
+                    st.error("Username or email already exists")
+            except Exception as e:
+                st.error(f"An error occurred during registration: {str(e)}")
     
     with tab3:
         st.subheader("Reset Password")
@@ -315,11 +321,14 @@ def login_page():
                     st.error("Passwords do not match")
                     return
                 
-                if st.session_state.db.reset_password(reset_token, new_password):
-                    st.success("Password reset successful! Please login with your new password.")
-                    st.experimental_set_query_params()  # Clear the token from URL
-                else:
-                    st.error("Invalid or expired reset link. Please request a new one.")
+                try:
+                    if st.session_state.db.reset_password(reset_token, new_password):
+                        st.success("Password reset successful! Please login with your new password.")
+                        st.experimental_set_query_params()  # Clear the token from URL
+                    else:
+                        st.error("Invalid or expired reset link. Please request a new one.")
+                except Exception as e:
+                    st.error(f"An error occurred during password reset: {str(e)}")
         else:
             # Show email input form
             email = st.text_input("Email", key="reset_email")
@@ -329,22 +338,30 @@ def login_page():
                     st.error("Please enter your email address")
                     return
                 
-                token = st.session_state.db.create_password_reset_token(email)
-                if token:
-                    # In a real app, you would send an email here
-                    # For now, we'll just show the reset link
-                    reset_url = f"{st.experimental_get_query_params().get('base_url', [''])[0]}/?token={token}"
-                    st.success(f"Password reset link has been sent to {email}")
-                    st.info(f"Reset Link: {reset_url}")
-                    st.warning("Note: In a production environment, this link would be sent via email.")
-                else:
-                    st.error("No account found with that email address")
+                try:
+                    token = st.session_state.db.create_password_reset_token(email)
+                    if token:
+                        # In a real app, you would send an email here
+                        # For now, we'll just show the reset link
+                        reset_url = f"{st.experimental_get_query_params().get('base_url', [''])[0]}/?token={token}"
+                        st.success(f"Password reset link has been sent to {email}")
+                        st.info(f"Reset Link: {reset_url}")
+                        st.warning("Note: In a production environment, this link would be sent via email.")
+                    else:
+                        st.error("No account found with that email address")
+                except Exception as e:
+                    st.error(f"An error occurred while creating reset token: {str(e)}")
 
 def main():
     """Main function to run the todo list application."""
     # Initialize database in session state if not already initialized
     if 'db' not in st.session_state:
-        st.session_state.db = Database()
+        try:
+            st.session_state.db = Database()
+            st.session_state.db.init_db()  # Ensure database is initialized
+        except Exception as e:
+            st.error(f"Failed to initialize database: {str(e)}")
+            return
 
     # Check if user is logged in
     if 'user_id' not in st.session_state:
