@@ -51,4 +51,6 @@ A Streamlit-based todo application with user authentication and database support
 - No sensitive data is stored in plain text
 
 ## Support
-If you encounter any issues, please check the Streamlit documentation or create an issue in the GitHub repository. 
+If you encounter any issues, please check the Streamlit documentation or create an issue in the GitHub repository.
+
+Last updated: 2024-03-21 
