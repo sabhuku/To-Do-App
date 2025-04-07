@@ -358,7 +358,8 @@ def main():
     if 'db' not in st.session_state:
         try:
             st.session_state.db = Database()
-            st.session_state.db.init_db()  # Ensure database is initialized
+            # The database is automatically initialized in the Database constructor
+            # No need to call init_db() or init_database() explicitly
         except Exception as e:
             st.error(f"Failed to initialize database: {str(e)}")
             return
