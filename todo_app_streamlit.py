@@ -76,7 +76,7 @@ class TodoList:
             st.warning("No tasks found in the todo list.")
             return
 
-        # Add custom CSS for colored checkmarks and tooltips
+        # Add custom CSS for colored checkmarks, tooltips, and due date styling
         st.markdown("""
             <style>
             .task-complete {
@@ -93,12 +93,86 @@ class TodoList:
             .task-incomplete:hover {
                 color: #00ff00;
             }
+            .overdue {
+                color: #ff0000;
+                font-weight: bold;
+            }
+            .due-today {
+                color: #ffa500;
+                font-weight: bold;
+            }
+            .due-soon {
+                color: #ffd700;
+            }
             </style>
         """, unsafe_allow_html=True)
 
-        # Process recurring tasks
-        self.process_recurring_tasks()
+        # Add view options
+        view_option = st.radio("View Tasks By:", ["List", "Calendar"])
+        
+        if view_option == "Calendar":
+            self.show_calendar_view(tasks)
+        else:
+            self.show_list_view(tasks)
 
+    def show_calendar_view(self, tasks: List[Dict]) -> None:
+        """Display tasks in a calendar view."""
+        from datetime import datetime, timedelta
+        import calendar
+        
+        # Get current month and year
+        today = datetime.now().date()
+        current_month = today.month
+        current_year = today.year
+        
+        # Create month navigation
+        col1, col2, col3 = st.columns([1, 2, 1])
+        with col1:
+            if st.button("Previous Month"):
+                if current_month == 1:
+                    current_month = 12
+                    current_year -= 1
+                else:
+                    current_month -= 1
+        with col2:
+            st.subheader(f"{calendar.month_name[current_month]} {current_year}")
+        with col3:
+            if st.button("Next Month"):
+                if current_month == 12:
+                    current_month = 1
+                    current_year += 1
+                else:
+                    current_month += 1
+        
+        # Get the calendar for the current month
+        cal = calendar.monthcalendar(current_year, current_month)
+        
+        # Create a grid for the calendar
+        st.write("")
+        cols = st.columns(7)
+        days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+        for i, day in enumerate(days):
+            cols[i].write(f"**{day}**")
+        
+        for week in cal:
+            cols = st.columns(7)
+            for i, day in enumerate(week):
+                if day == 0:
+                    cols[i].write("")
+                    continue
+                
+                current_date = datetime(current_year, current_month, day).date()
+                day_tasks = [task for task in tasks if task["due_date"] == current_date]
+                
+                if day_tasks:
+                    with cols[i].expander(f"{day} ({len(day_tasks)})"):
+                        for task in day_tasks:
+                            self.display_task(task)
+                else:
+                    cols[i].write(day)
+
+    def show_list_view(self, tasks: List[Dict]) -> None:
+        """Display tasks in a list view with filtering and sorting."""
         # Add filtering and sorting options
         st.subheader("Filter and Sort Tasks")
         col1, col2, col3 = st.columns(3)
@@ -146,50 +220,68 @@ class TodoList:
 
         st.subheader("=== Todo List ===")
         for task in filtered_tasks:
-            col1, col2, col3 = st.columns([1, 10, 1])
+            self.display_task(task)
+
+    def display_task(self, task: Dict) -> None:
+        """Display a single task with due date styling."""
+        from datetime import datetime, timedelta
+        
+        col1, col2, col3 = st.columns([1, 10, 1])
+        
+        with col1:
+            check_class = "task-complete" if task["completed"] else "task-incomplete"
+            if task["completed"]:
+                st.markdown(f'<div class="{check_class}">✓</div>', unsafe_allow_html=True)
+            else:
+                if st.button("✓", key=f"complete_{task['id']}", help="Click to mark as completed"):
+                    self.mark_completed(task['id'])
+                    st.experimental_rerun()
+            if st.button("🗑️", key=f"delete_{task['id']}", help="Delete task"):
+                self.delete_task(task['id'])
+        
+        with col2:
+            priority_color = {
+                "High": "🔴",
+                "Medium": "🟡",
+                "Low": "🟢"
+            }
             
-            with col1:
-                check_class = "task-complete" if task["completed"] else "task-incomplete"
-                if task["completed"]:
-                    st.markdown(f'<div class="{check_class}">✓</div>', unsafe_allow_html=True)
-                else:
-                    if st.button("✓", key=f"complete_{task['id']}", help="Click to mark as completed"):
-                        self.mark_completed(task['id'])
-                        st.experimental_rerun()
-                if st.button("🗑️", key=f"delete_{task['id']}", help="Delete task"):
-                    self.delete_task(task['id'])
+            # Add due date styling
+            due_date_style = ""
+            if not task["completed"] and task["due_date"]:
+                today = datetime.now().date()
+                due_date = task["due_date"]
+                if due_date < today:
+                    due_date_style = "overdue"
+                elif due_date == today:
+                    due_date_style = "due-today"
+                elif (due_date - today).days <= 3:
+                    due_date_style = "due-soon"
             
-            with col2:
-                priority_color = {
-                    "High": "🔴",
-                    "Medium": "🟡",
-                    "Low": "🟢"
-                }
-                title_style = "text-decoration: line-through; color: #808080;" if task["completed"] else ""
-                st.markdown(
-                    f"{priority_color[task['priority']]} <span style='{title_style}'>**{task['id']}. {task['title']}**</span>",
-                    unsafe_allow_html=True
-                )
-                st.markdown(f"**Category:** {task['category']} | **Priority:** {task['priority']}")
-                if task["description"]:
-                    description_style = "color: #808080;" if task["completed"] else ""
-                    st.markdown(f"<span style='{description_style}'>Description: {task['description']}</span>", unsafe_allow_html=True)
-                if task["due_date"]:
-                    due_style = "color: #808080;" if task["completed"] else ""
-                    st.markdown(f"<span style='{due_style}'>Due: {task['due_date'].strftime('%Y-%m-%d')}</span>", unsafe_allow_html=True)
-                if task["recurrence"] != "None":
-                    recurrence_style = "color: #808080;" if task["completed"] else ""
-                    st.markdown(f"<span style='{recurrence_style}'>Recurrence: {task['recurrence']}</span>", unsafe_allow_html=True)
-                if task["tags"]:
-                    tags_style = "color: #808080;" if task["completed"] else ""
-                    st.markdown(f"<span style='{tags_style}'>Tags: " + ", ".join([f"`{tag}`" for tag in task["tags"]]) + "</span>", unsafe_allow_html=True)
-                created_style = "color: #808080;" if task["completed"] else ""
-                st.markdown(f"<span style='{created_style}'>Created: {task['created_at'].strftime('%Y-%m-%d %H:%M:%S')}</span>", unsafe_allow_html=True)
-            
-            with col3:
-                if not task["completed"] and st.button("✏️", key=f"edit_{task['id']}", help="Edit task"):
-                    self.show_edit_form(task)
-            st.divider()
+            title_style = "text-decoration: line-through; color: #808080;" if task["completed"] else ""
+            st.markdown(
+                f"{priority_color[task['priority']]} <span style='{title_style}'>**{task['id']}. {task['title']}**</span>",
+                unsafe_allow_html=True
+            )
+            st.markdown(f"**Category:** {task['category']} | **Priority:** {task['priority']}")
+            if task["description"]:
+                description_style = "color: #808080;" if task["completed"] else ""
+                st.markdown(f"<span style='{description_style}'>Description: {task['description']}</span>", unsafe_allow_html=True)
+            if task["due_date"]:
+                st.markdown(f"<span class='{due_date_style}'>Due: {task['due_date'].strftime('%Y-%m-%d')}</span>", unsafe_allow_html=True)
+            if task["recurrence"] != "None":
+                recurrence_style = "color: #808080;" if task["completed"] else ""
+                st.markdown(f"<span style='{recurrence_style}'>Recurrence: {task['recurrence']}</span>", unsafe_allow_html=True)
+            if task["tags"]:
+                tags_style = "color: #808080;" if task["completed"] else ""
+                st.markdown(f"<span style='{tags_style}'>Tags: " + ", ".join([f"`{tag}`" for tag in task["tags"]]) + "</span>", unsafe_allow_html=True)
+            created_style = "color: #808080;" if task["completed"] else ""
+            st.markdown(f"<span style='{created_style}'>Created: {task['created_at'].strftime('%Y-%m-%d %H:%M:%S')}</span>", unsafe_allow_html=True)
+        
+        with col3:
+            if not task["completed"] and st.button("✏️", key=f"edit_{task['id']}", help="Edit task"):
+                self.show_edit_form(task)
+        st.divider()
 
     def show_edit_form(self, task: Dict) -> None:
         """Show form to edit a task."""
