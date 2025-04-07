@@ -2,38 +2,25 @@ import streamlit as st
 from typing import List, Dict, Set
 from datetime import datetime, date, timedelta
 import json
+from database import Database
 
 class TodoList:
     PRIORITY_LEVELS = ["High", "Medium", "Low"]
     RECURRENCE_OPTIONS = ["None", "Daily", "Weekly", "Monthly"]
 
-    def __init__(self):
-        if 'tasks' not in st.session_state:
-            st.session_state.tasks: List[Dict] = []
+    def __init__(self, db: Database, user_id: int):
+        self.db = db
+        self.user_id = user_id
         if 'categories' not in st.session_state:
             st.session_state.categories = ["Work", "Personal", "Shopping", "Other"]
         if 'tags' not in st.session_state:
-            st.session_state.tags: Set[str] = set()
-        self.update_existing_tasks()
-
-    def update_existing_tasks(self) -> None:
-        """Update existing tasks with new fields if they don't exist."""
-        for task in st.session_state.tasks:
-            if "priority" not in task:
-                task["priority"] = "Medium"
-            if "tags" not in task:
-                task["tags"] = []
-            if "recurrence" not in task:
-                task["recurrence"] = "None"
-            # Update global tags
-            st.session_state.tags.update(task["tags"])
+            st.session_state.tags: Set[str] = set(self.db.get_all_tags(self.user_id))
 
     def add_task(self, title: str, description: str = "", category: str = "Other", 
                  due_date: date = None, priority: str = "Medium", tags: List[str] = None,
                  recurrence: str = "None") -> None:
         """Add a new task to the todo list."""
-        task = {
-            "id": len(st.session_state.tasks) + 1,
+        task_data = {
             "title": title,
             "description": description,
             "category": category,
@@ -42,58 +29,50 @@ class TodoList:
             "tags": tags or [],
             "recurrence": recurrence,
             "completed": False,
-            "created_at": datetime.now()
         }
-        st.session_state.tasks.append(task)
-        # Add new tags to the global tag set
-        st.session_state.tags.update(tags or [])
-        st.success(f"Task added successfully! ID: {task['id']}")
+        task_id = self.db.add_task(self.user_id, task_data)
+        if task_id:
+            st.success(f"Task added successfully! ID: {task_id}")
+            # Update tags in session state
+            st.session_state.tags.update(tags or [])
 
     def edit_task(self, task_id: int, title: str, description: str, category: str, 
                   due_date: date, priority: str, tags: List[str], recurrence: str) -> None:
         """Edit an existing task."""
-        for task in st.session_state.tasks:
-            if task["id"] == task_id:
-                task["title"] = title
-                task["description"] = description
-                task["category"] = category
-                task["due_date"] = due_date
-                task["priority"] = priority
-                task["tags"] = tags
-                task["recurrence"] = recurrence
-                # Update global tags
-                st.session_state.tags.update(tags)
-                st.success(f"Task {task_id} updated successfully!")
-                return
+        task_data = {
+            "title": title,
+            "description": description,
+            "category": category,
+            "due_date": due_date,
+            "priority": priority,
+            "tags": tags,
+            "recurrence": recurrence
+        }
+        if self.db.update_task(task_id, self.user_id, task_data):
+            st.success(f"Task {task_id} updated successfully!")
+            # Update tags in session state
+            st.session_state.tags.update(tags)
+        else:
+            st.error(f"Failed to update task {task_id}")
+
+    def mark_completed(self, task_id: int) -> None:
+        """Mark a task as completed."""
+        task_data = {"completed": True}
+        if self.db.update_task(task_id, self.user_id, task_data):
+            return
         st.error(f"Task with ID {task_id} not found.")
 
-    def process_recurring_tasks(self) -> None:
-        """Process recurring tasks and create new instances if needed."""
-        today = date.today()
-        new_tasks = []
-        
-        for task in st.session_state.tasks:
-            if task["completed"] and task["recurrence"] != "None":
-                if task["recurrence"] == "Daily":
-                    next_due = task["due_date"] + timedelta(days=1)
-                elif task["recurrence"] == "Weekly":
-                    next_due = task["due_date"] + timedelta(weeks=1)
-                elif task["recurrence"] == "Monthly":
-                    next_due = task["due_date"] + timedelta(days=30)
-                
-                if next_due >= today:
-                    new_task = task.copy()
-                    new_task["id"] = len(st.session_state.tasks) + len(new_tasks) + 1
-                    new_task["completed"] = False
-                    new_task["due_date"] = next_due
-                    new_task["created_at"] = datetime.now()
-                    new_tasks.append(new_task)
-        
-        st.session_state.tasks.extend(new_tasks)
+    def delete_task(self, task_id: int) -> None:
+        """Delete a task from the todo list."""
+        if self.db.delete_task(task_id, self.user_id):
+            st.success(f"Task {task_id} deleted successfully!")
+        else:
+            st.error(f"Task with ID {task_id} not found.")
 
     def view_tasks(self) -> None:
         """Display all tasks in the todo list."""
-        if not st.session_state.tasks:
+        tasks = self.db.get_tasks(self.user_id)
+        if not tasks:
             st.warning("No tasks found in the todo list.")
             return
 
@@ -137,7 +116,7 @@ class TodoList:
             sort_by = st.selectbox("Sort By", ["Due Date", "Priority", "Created Date"])
 
         # Filter tasks
-        filtered_tasks = st.session_state.tasks
+        filtered_tasks = tasks
 
         if selected_category != "All":
             filtered_tasks = [task for task in filtered_tasks if task["category"] == selected_category]
@@ -237,27 +216,97 @@ class TodoList:
                              new_due_date, new_priority, new_tags, new_recurrence)
                 st.experimental_rerun()
 
-    def mark_completed(self, task_id: int) -> None:
-        """Mark a task as completed."""
+    def process_recurring_tasks(self) -> None:
+        """Process recurring tasks and create new instances if needed."""
+        today = date.today()
+        new_tasks = []
+        
         for task in st.session_state.tasks:
-            if task["id"] == task_id:
-                task["completed"] = True
-                return
-        st.error(f"Task with ID {task_id} not found.")
+            if task["completed"] and task["recurrence"] != "None":
+                if task["recurrence"] == "Daily":
+                    next_due = task["due_date"] + timedelta(days=1)
+                elif task["recurrence"] == "Weekly":
+                    next_due = task["due_date"] + timedelta(weeks=1)
+                elif task["recurrence"] == "Monthly":
+                    next_due = task["due_date"] + timedelta(days=30)
+                
+                if next_due >= today:
+                    new_task = task.copy()
+                    new_task["id"] = len(st.session_state.tasks) + len(new_tasks) + 1
+                    new_task["completed"] = False
+                    new_task["due_date"] = next_due
+                    new_task["created_at"] = datetime.now()
+                    new_tasks.append(new_task)
+        
+        st.session_state.tasks.extend(new_tasks)
 
-    def delete_task(self, task_id: int) -> None:
-        """Delete a task from the todo list."""
-        for task in st.session_state.tasks:
-            if task["id"] == task_id:
-                st.session_state.tasks.remove(task)
-                st.success(f"Task {task_id} deleted successfully!")
+def login_page():
+    """Display the login page."""
+    st.title("Todo List App - Login")
+    
+    # Create tabs for login and registration
+    tab1, tab2 = st.tabs(["Login", "Register"])
+    
+    with tab1:
+        st.subheader("Login")
+        username = st.text_input("Username", key="login_username")
+        password = st.text_input("Password", type="password", key="login_password")
+        
+        if st.button("Login"):
+            if not username or not password:
+                st.error("Please enter both username and password")
                 return
-        st.error(f"Task with ID {task_id} not found.")
+            
+            user_id = st.session_state.db.verify_user(username, password)
+            if user_id:
+                st.session_state.user_id = user_id
+                st.session_state.username = username
+                st.success("Login successful!")
+                st.experimental_rerun()
+            else:
+                st.error("Invalid username or password")
+    
+    with tab2:
+        st.subheader("Register")
+        new_username = st.text_input("Username", key="register_username")
+        new_password = st.text_input("Password", type="password", key="register_password")
+        confirm_password = st.text_input("Confirm Password", type="password")
+        
+        if st.button("Register"):
+            if not new_username or not new_password:
+                st.error("Please enter both username and password")
+                return
+            
+            if new_password != confirm_password:
+                st.error("Passwords do not match")
+                return
+            
+            if st.session_state.db.create_user(new_username, new_password):
+                st.success("Registration successful! Please login.")
+            else:
+                st.error("Username already exists")
 
 def main():
     """Main function to run the todo list application."""
-    st.title("Todo List App")
-    todo_list = TodoList()
+    # Initialize database
+    if 'db' not in st.session_state:
+        st.session_state.db = Database()
+
+    # Check if user is logged in
+    if 'user_id' not in st.session_state:
+        login_page()
+        return
+
+    st.title(f"Todo List App - Welcome {st.session_state.username}!")
+    
+    # Add logout button
+    if st.sidebar.button("Logout"):
+        del st.session_state.user_id
+        del st.session_state.username
+        st.experimental_rerun()
+        return
+
+    todo_list = TodoList(st.session_state.db, st.session_state.user_id)
 
     # Initialize form fields in session state if they don't exist
     if 'should_clear_form' not in st.session_state:
@@ -278,7 +327,7 @@ def main():
         category = st.selectbox("Category", st.session_state.categories, 
                               index=0 if st.session_state.should_clear_form else None)
         priority = st.selectbox("Priority", todo_list.PRIORITY_LEVELS,
-                              index=1 if st.session_state.should_clear_form else None)  # Default to Medium
+                              index=1 if st.session_state.should_clear_form else None)
         due_date = st.date_input("Due Date (optional)")
         recurrence = st.selectbox("Recurrence", todo_list.RECURRENCE_OPTIONS,
                                 index=0 if st.session_state.should_clear_form else None)
