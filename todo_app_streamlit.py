@@ -362,9 +362,10 @@ def main():
     if 'db' not in st.session_state:
         try:
             st.session_state.db = Database()
+            st.success("Database initialized successfully")
         except Exception as e:
             st.error(f"Failed to initialize database: {str(e)}")
-            return
+            st.stop()  # Stop the app if database initialization fails
 
     # Check if user is logged in
     if 'user_id' not in st.session_state:
@@ -373,61 +374,80 @@ def main():
 
     # Clear the page and show the main app
     st.empty()  # Clear the login page
-    st.title(f"Todo List App - Welcome {st.session_state.username}!")
     
-    # Add logout button
-    if st.sidebar.button("Logout"):
+    try:
+        # Get user details to ensure they still exist
+        user = st.session_state.db.get_user_by_id(st.session_state.user_id)
+        if not user:
+            st.error("User not found. Please login again.")
+            del st.session_state.user_id
+            del st.session_state.username
+            del st.session_state.email
+            st.rerun()
+            return
+            
+        st.title(f"Todo List App - Welcome {user['username']}!")
+        
+        # Add logout button
+        if st.sidebar.button("Logout"):
+            del st.session_state.user_id
+            del st.session_state.username
+            del st.session_state.email
+            st.rerun()
+            return
+
+        todo_list = TodoList(st.session_state.db, st.session_state.user_id)
+
+        # Initialize form fields in session state if they don't exist
+        if 'should_clear_form' not in st.session_state:
+            st.session_state.should_clear_form = False
+
+        def clear_form():
+            st.session_state.should_clear_form = True
+
+        def get_default_value(key, default=""):
+            if st.session_state.should_clear_form:
+                return default
+            return st.session_state.get(key, default)
+
+        with st.sidebar:
+            st.header("Add New Task")
+            title = st.text_input("Task Title", value=get_default_value("form_title"))
+            description = st.text_area("Task Description (optional)", value=get_default_value("form_description"))
+            category = st.selectbox("Category", st.session_state.categories, 
+                                  index=0 if st.session_state.should_clear_form else None)
+            priority = st.selectbox("Priority", todo_list.PRIORITY_LEVELS,
+                                  index=1 if st.session_state.should_clear_form else None)
+            due_date = st.date_input("Due Date (optional)")
+            recurrence = st.selectbox("Recurrence", todo_list.RECURRENCE_OPTIONS,
+                                    index=0 if st.session_state.should_clear_form else None)
+            
+            # Tag input with autocomplete
+            tags = st.multiselect("Select Tags", list(st.session_state.tags),
+                                default=[] if st.session_state.should_clear_form else None)
+            new_tag = st.text_input("Add New Tag", value=get_default_value("form_new_tag"))
+            
+            if st.button("Add Task"):
+                if title:
+                    if new_tag:
+                        tags.append(new_tag)
+                    todo_list.add_task(title, description, category, due_date, priority, tags, recurrence)
+                    clear_form()
+                    st.rerun()
+                else:
+                    st.error("Task title is required!")
+
+            # Reset the clear form flag
+            st.session_state.should_clear_form = False
+
+        todo_list.view_tasks()
+    except Exception as e:
+        st.error(f"An error occurred: {str(e)}")
+        st.error("Please try logging in again.")
         del st.session_state.user_id
         del st.session_state.username
         del st.session_state.email
         st.rerun()
-        return
-
-    todo_list = TodoList(st.session_state.db, st.session_state.user_id)
-
-    # Initialize form fields in session state if they don't exist
-    if 'should_clear_form' not in st.session_state:
-        st.session_state.should_clear_form = False
-
-    def clear_form():
-        st.session_state.should_clear_form = True
-
-    def get_default_value(key, default=""):
-        if st.session_state.should_clear_form:
-            return default
-        return st.session_state.get(key, default)
-
-    with st.sidebar:
-        st.header("Add New Task")
-        title = st.text_input("Task Title", value=get_default_value("form_title"))
-        description = st.text_area("Task Description (optional)", value=get_default_value("form_description"))
-        category = st.selectbox("Category", st.session_state.categories, 
-                              index=0 if st.session_state.should_clear_form else None)
-        priority = st.selectbox("Priority", todo_list.PRIORITY_LEVELS,
-                              index=1 if st.session_state.should_clear_form else None)
-        due_date = st.date_input("Due Date (optional)")
-        recurrence = st.selectbox("Recurrence", todo_list.RECURRENCE_OPTIONS,
-                                index=0 if st.session_state.should_clear_form else None)
-        
-        # Tag input with autocomplete
-        tags = st.multiselect("Select Tags", list(st.session_state.tags),
-                            default=[] if st.session_state.should_clear_form else None)
-        new_tag = st.text_input("Add New Tag", value=get_default_value("form_new_tag"))
-        
-        if st.button("Add Task"):
-            if title:
-                if new_tag:
-                    tags.append(new_tag)
-                todo_list.add_task(title, description, category, due_date, priority, tags, recurrence)
-                clear_form()
-                st.rerun()
-            else:
-                st.error("Task title is required!")
-
-        # Reset the clear form flag
-        st.session_state.should_clear_form = False
-
-    todo_list.view_tasks()
 
 if __name__ == "__main__":
     main()
