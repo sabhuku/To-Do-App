@@ -44,3 +44,4 @@ debug.py
 /venv/
 *.pyc
 __pycache__/
+todo.db

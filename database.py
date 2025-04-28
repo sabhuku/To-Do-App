@@ -194,6 +194,15 @@ class Database:
 
     def add_task(self, user_id: int, task_data: Dict) -> Optional[int]:
         """Add a new task."""
+        
+        # Format due_date if it's a date object
+        due_date_value = task_data.get("due_date")
+        if isinstance(due_date_value, date):
+            due_date_str = due_date_value.strftime("%Y-%m-%d")
+        else:
+            # Assume it's either None or already a string (or handle other types if needed)
+            due_date_str = due_date_value 
+            
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
             cursor.execute(
@@ -206,7 +215,7 @@ class Database:
                     task_data["title"],
                     task_data.get("description"),
                     task_data.get("category"),
-                    task_data.get("due_date"),
+                    due_date_str,  # Use the formatted string or original value
                     task_data.get("priority")
                 )
             )
@@ -289,7 +298,7 @@ class Database:
                 value = value.strftime("%Y-%m-%d")
                 
             # Ensure the key is a valid column name (add more columns as needed)
-            if key in ["title", "description", "category", "due_date", "priority", "completed", "recurrence"]:
+            if key in ["title", "description", "category", "due_date", "priority", "completed"]:
                  set_parts.append(f"{key} = ?")
                  values.append(value)
 

@@ -161,17 +161,16 @@ class TodoList:
 
         def get_sort_key(task):
             if selected_sort == "Due Date":
-                due_date_str = task.get("due_date")
-                if due_date_str:
-                    try:
-                        # Convert string date from DB to date object for comparison
-                        return datetime.strptime(due_date_str, "%Y-%m-%d").date()
-                    except (ValueError, TypeError):
-                        # Handle potential invalid date strings or types gracefully
-                        logger.warning(f"Invalid date format for task {task.get('id')}: {due_date_str}")
-                        return far_future_date # Sort invalid dates last
+                due_date_obj = task.get("due_date")
+                # Check if it's a valid date object
+                if isinstance(due_date_obj, date):
+                    return due_date_obj # Use the date object directly for sorting
                 else:
-                    return far_future_date # Sort tasks without due dates last
+                     # If it's None or some other invalid type, sort it last
+                    if due_date_obj is not None:
+                         # Log if we encounter an unexpected non-date, non-None type
+                         logger.warning(f"Unexpected type for due_date in task {task.get('id')}: {type(due_date_obj)}")
+                    return far_future_date # Sort tasks without valid due dates last
             elif selected_sort == "Priority":
                 return priority_map.get(task.get("priority"), 3) # Default to lowest prio if missing
             elif selected_sort == "Title":
@@ -300,18 +299,20 @@ class TodoList:
 
         with col1:
             # Use unique keys for each button based on task ID and action
-            complete_key = f"complete_{task['id']}"
+            toggle_key = f"toggle_{task['id']}"
             delete_key = f"delete_{task['id']}"
 
-            # Always display the checkbox; its 'value' determines checked/unchecked state
-            is_completed = st.checkbox(
-                f"Complete task {task['id']}",  # Add descriptive label
-                value=task["completed"],
-                key=f"complete_{task['id']}",
-                on_change=self.toggle_task_completion, # Ensure correct callback
-                args=(task['id'], task["completed"]), # Pass ID and current status
-                help="Mark as Incomplete" if task["completed"] else "Mark as Complete", # Added tooltip
-                label_visibility="collapsed" # Hide the label visually
+            # Replace checkbox with an icon button
+            icon = "☑️" if task["completed"] else "☐"
+            tooltip = "Mark as Incomplete" if task["completed"] else "Mark as Complete"
+
+            st.button(
+                icon, # Display icon as the button label
+                key=toggle_key,
+                on_click=self.toggle_task_completion,
+                args=(task['id'], task['completed']), # Pass ID and current status
+                help=tooltip, # Tooltip on hover
+                use_container_width=True # Style consistency
             )
 
             if st.button("🗑️", key=delete_key, help="Delete task", use_container_width=True):
