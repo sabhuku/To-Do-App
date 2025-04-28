@@ -33,3 +33,14 @@ ENV/
 # OS
 .DS_Store
 Thumbs.db 
+
+# Database file
+todo.db
+
+# Debugging files
+debug.py
+
+# Python virtual environment
+/venv/
+*.pyc
+__pycache__/

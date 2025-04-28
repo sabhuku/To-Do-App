@@ -5,6 +5,7 @@ import hashlib
 import os
 import secrets
 import logging
+import json
 
 # Set up logging
 logging.basicConfig(level=logging.DEBUG)
@@ -19,6 +20,10 @@ class Database:
     def init_db(self):
         """Initialize the database with required tables."""
         try:
+            if not os.path.exists(self.db_path):
+                logger.error(f"Database file {self.db_path} does not exist!")
+            else:
+                logger.debug(f"Database file {self.db_path} exists.")
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
                 logger.debug("Creating database tables...")
@@ -86,6 +91,7 @@ class Database:
                 
                 conn.commit()
                 logger.debug("Database tables created successfully")
+                logger.debug(f"Database path: {self.db_path}")
         except Exception as e:
             logger.error(f"Error initializing database: {str(e)}")
             raise
@@ -246,67 +252,63 @@ class Database:
             )
             tasks = []
             for row in cursor.fetchall():
+                due_date_obj = None
+                if row[4]: # Check if due_date string is not None or empty
+                    try:
+                        due_date_obj = datetime.strptime(row[4], '%Y-%m-%d').date()
+                    except ValueError:
+                        logger.error(f"Invalid date format for task {row[0]}: {row[4]}")
+                        # Keep due_date_obj as None if parsing fails
+
                 tasks.append({
                     "id": row[0],
                     "title": row[1],
                     "description": row[2],
                     "category": row[3],
-                    "due_date": row[4],
+                    "due_date": due_date_obj, # Use the converted date object or None
                     "priority": row[5],
-                    "completed": row[6],
+                    "completed": row[6] == 1, # Ensure completed is boolean
                     "tags": row[7].split(",") if row[7] else []
                 })
+            logger.debug(f"Retrieved tasks for user {user_id}: {tasks}")
             return tasks
 
     def update_task(self, task_id: int, user_id: int, task_data: Dict) -> bool:
-        """Update a task."""
+        """Update an existing task for a specific user."""
+        if not task_data: # No data provided to update
+            return False
+
+        # Dynamically build the SET part of the SQL query
+        set_parts = []
+        values = []
+        for key, value in task_data.items():
+            # Basic validation/mapping if needed (e.g., boolean to int for SQLite)
+            if isinstance(value, bool):
+                value = 1 if value else 0
+            elif isinstance(value, date):
+                value = value.strftime("%Y-%m-%d")
+                
+            # Ensure the key is a valid column name (add more columns as needed)
+            if key in ["title", "description", "category", "due_date", "priority", "completed", "recurrence"]:
+                 set_parts.append(f"{key} = ?")
+                 values.append(value)
+
+        if not set_parts: # No valid fields to update
+            logger.warning("No valid fields provided for task update.")
+            return False
+
+        sql = f"UPDATE tasks SET {', '.join(set_parts)} WHERE id = ? AND user_id = ?"
+        values.extend([task_id, user_id])
+
         try:
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
-                cursor.execute(
-                    """
-                    UPDATE tasks
-                    SET title = ?, description = ?, category = ?, due_date = ?, priority = ?
-                    WHERE id = ? AND user_id = ?
-                    """,
-                    (
-                        task_data["title"],
-                        task_data.get("description"),
-                        task_data.get("category"),
-                        task_data.get("due_date"),
-                        task_data.get("priority"),
-                        task_id,
-                        user_id
-                    )
-                )
-                
-                # Update tags
-                if "tags" in task_data:
-                    # Remove existing tags
-                    cursor.execute(
-                        "DELETE FROM task_tags WHERE task_id = ?",
-                        (task_id,)
-                    )
-                    
-                    # Add new tags
-                    for tag_name in task_data["tags"]:
-                        cursor.execute(
-                            "INSERT OR IGNORE INTO tags (user_id, name) VALUES (?, ?)",
-                            (user_id, tag_name)
-                        )
-                        cursor.execute(
-                            "SELECT id FROM tags WHERE user_id = ? AND name = ?",
-                            (user_id, tag_name)
-                        )
-                        tag_id = cursor.fetchone()[0]
-                        cursor.execute(
-                            "INSERT INTO task_tags (task_id, tag_id) VALUES (?, ?)",
-                            (task_id, tag_id)
-                        )
-                
+                cursor.execute(sql, tuple(values))
                 conn.commit()
-                return cursor.rowcount > 0
-        except sqlite3.Error:
+                logger.info(f"Task {task_id} for user {user_id} updated successfully with data: {task_data}")
+                return True
+        except sqlite3.Error as e:
+            logger.error(f"Error updating task {task_id} for user {user_id}: {e}")
             return False
 
     def delete_task(self, task_id: int, user_id: int) -> bool:

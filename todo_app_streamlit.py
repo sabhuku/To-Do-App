@@ -1,8 +1,12 @@
 import streamlit as st
-from typing import List, Dict, Set
+from typing import List, Dict, Set, Optional
 from datetime import datetime, date, timedelta
 import json
+import traceback
 from database import Database
+import logging
+
+logger = logging.getLogger(__name__)
 
 class TodoList:
     PRIORITY_LEVELS = ["High", "Medium", "Low"]
@@ -35,6 +39,10 @@ class TodoList:
             st.success(f"Task added successfully! ID: {task_id}")
             # Update tags in session state
             st.session_state.tags.update(tags or [])
+            # Reload tasks from the database
+            st.session_state.tasks = self.db.get_tasks(self.user_id)
+        else:
+            st.error("Failed to add task.")
 
     def edit_task(self, task_id: int, title: str, description: str, category: str, 
                   due_date: date, priority: str, tags: List[str], recurrence: str) -> None:
@@ -57,63 +65,147 @@ class TodoList:
 
     def mark_completed(self, task_id: int) -> None:
         """Mark a task as completed."""
+        # Debugging: Check the structure of the task
+        task = next((t for t in st.session_state.tasks if t["id"] == task_id), None)
+        if task is None:
+            st.error(f"Task with ID {task_id} not found in session state.")
+            return
+
         task_data = {"completed": True}
         if self.db.update_task(task_id, self.user_id, task_data):
-            return
-        st.error(f"Task with ID {task_id} not found.")
+            # Update session state immediately for responsiveness
+            for task in st.session_state.tasks:
+                if task['id'] == task_id:
+                    task['completed'] = task_data["completed"]
+                    break
+            logger.info(f"Task {task_id} status toggled to {task_data['completed']}")
+            # No explicit rerun needed, on_change handles it
+        else:
+            st.error(f"Failed to update task {task_id}.")
 
     def delete_task(self, task_id: int) -> None:
         """Delete a task from the todo list."""
         if self.db.delete_task(task_id, self.user_id):
             st.success(f"Task {task_id} deleted successfully!")
+            # Update the session state directly
+            st.session_state.tasks = self.db.get_tasks(self.user_id)
         else:
             st.error(f"Task with ID {task_id} not found.")
 
-    def view_tasks(self) -> None:
-        """Display all tasks in the todo list."""
-        tasks = self.db.get_tasks(self.user_id)
-        if not tasks:
-            st.warning("No tasks found in the todo list.")
-            return
-
-        # Add custom CSS for colored checkmarks, tooltips, and due date styling
-        st.markdown("""
-            <style>
-            .task-complete {
-                color: #00ff00;
-                font-size: 1.2rem;
-                margin-bottom: 0.5rem;
-            }
-            .task-incomplete {
-                color: #808080;
-                font-size: 1.2rem;
-                margin-bottom: 0.5rem;
-                cursor: pointer;
-            }
-            .task-incomplete:hover {
-                color: #00ff00;
-            }
-            .overdue {
-                color: #ff0000;
-                font-weight: bold;
-            }
-            .due-today {
-                color: #ffa500;
-                font-weight: bold;
-            }
-            .due-soon {
-                color: #ffd700;
-            }
-            </style>
-        """, unsafe_allow_html=True)
-
-        # Add view options
-        view_option = st.radio("View Tasks By:", ["List", "Calendar"])
-        
-        if view_option == "Calendar":
-            self.show_calendar_view(tasks)
+    def toggle_task_completion(self, task_id: int, current_status: bool):
+        """Toggle the completion status of a task."""
+        new_status = not current_status
+        task_data = {"completed": new_status}
+        logger.debug(f"Toggling task {task_id} completion from {current_status} to {new_status}")
+        if self.db.update_task(task_id, self.user_id, task_data):
+            # Update session state immediately for responsiveness
+            for task in st.session_state.tasks:
+                if task['id'] == task_id:
+                    task['completed'] = new_status
+                    logger.debug(f"Session state updated for task {task_id}")
+                    break
+            logger.info(f"Task {task_id} status toggled to {new_status}")
+            # Streamlit reruns automatically due to widget interaction (on_change)
         else:
-            self.show_list_view(tasks)
+            st.error(f"Failed to update task {task_id} status.")
+
+    def view_tasks(self) -> None:
+        """Display all tasks in the todo list with filtering and sorting."""
+        # --- Get All Tasks ---
+        tasks = self.db.get_tasks(self.user_id) # Fetch all tasks first
+
+        st.subheader("Filter & Sort Tasks")
+
+        # Initialize filter/sort options
+        categories = ["All"]
+        priorities = ["All", "High", "Medium", "Low"]
+        statuses = ["All", "Active", "Completed"]
+        sort_options = ["Due Date", "Priority", "Title"]
+
+        if tasks:
+            # Dynamically get categories from existing tasks
+            task_categories = set(task.get('category', 'Uncategorized') for task in tasks if task.get('category'))
+            categories.extend(sorted(list(task_categories)))
+        else:
+             st.info("No tasks yet! Add one using the form above.")
+             # Don't show filters if there are no tasks
+             return # Exit the function early
+
+
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            selected_category = st.selectbox("Category:", categories, key="filter_category")
+        with col2:
+            selected_priority = st.selectbox("Priority:", priorities, key="filter_priority")
+        with col3:
+            # Use index=1 to default to "Active" tasks initially
+            selected_status = st.radio("Status:", statuses, index=1, horizontal=True, key="filter_status")
+        with col4:
+            selected_sort = st.selectbox("Sort by:", sort_options, key="sort_tasks")
+
+        # --- Filtering ---
+        filtered_tasks = tasks # Start with all tasks
+        if selected_category != "All":
+            filtered_tasks = [task for task in filtered_tasks if task.get('category') == selected_category]
+        if selected_priority != "All":
+            filtered_tasks = [task for task in filtered_tasks if task.get('priority') == selected_priority]
+        if selected_status == "Active":
+            filtered_tasks = [task for task in filtered_tasks if not task.get('completed')]
+        elif selected_status == "Completed":
+            filtered_tasks = [task for task in filtered_tasks if task.get('completed')]
+
+        # --- Sorting ---
+        priority_map = {"High": 0, "Medium": 1, "Low": 2}
+        # Define a very large date for sorting tasks without due dates last
+        far_future_date = date(9999, 12, 31)
+
+        def get_sort_key(task):
+            if selected_sort == "Due Date":
+                due_date_str = task.get("due_date")
+                if due_date_str:
+                    try:
+                        # Convert string date from DB to date object for comparison
+                        return datetime.strptime(due_date_str, "%Y-%m-%d").date()
+                    except (ValueError, TypeError):
+                        # Handle potential invalid date strings or types gracefully
+                        logger.warning(f"Invalid date format for task {task.get('id')}: {due_date_str}")
+                        return far_future_date # Sort invalid dates last
+                else:
+                    return far_future_date # Sort tasks without due dates last
+            elif selected_sort == "Priority":
+                return priority_map.get(task.get("priority"), 3) # Default to lowest prio if missing
+            elif selected_sort == "Title":
+                return task.get("title", "").lower() # Sort case-insensitively, handle missing title
+            return task.get("id") # Default sort by ID if needed
+
+        # Handle potential errors during sorting key access
+        try:
+            sorted_tasks = sorted(filtered_tasks, key=get_sort_key)
+        except Exception as e:
+            logger.error(f"Error during task sorting: {e}")
+            st.error("An error occurred while sorting tasks.")
+            sorted_tasks = filtered_tasks # Show unsorted list on error
+
+        # --- Display Tasks ---
+        st.markdown("---") # Separator
+        if not sorted_tasks:
+            st.info("No tasks match the current filters.")
+        else:
+            # Use singular 'task' if only one task matches
+            task_count_text = f"{len(sorted_tasks)} task"
+            if len(sorted_tasks) != 1:
+                task_count_text += "s"
+            st.write(f"Displaying {task_count_text}:")
+
+            for task in sorted_tasks:
+                 # We need to wrap the display_task call in a try-except
+                 # because errors in display_task could stop the loop
+                 try:
+                    # Pass the task dictionary to the display method
+                    self.display_task(task)
+                 except Exception as e:
+                    logger.error(f"Error displaying task {task.get('id', 'N/A')}: {e}", exc_info=True)
+                    st.error(f"Error displaying task {task.get('id', 'N/A')}. Check logs.")
 
     def show_calendar_view(self, tasks: List[Dict]) -> None:
         """Display tasks in a calendar view."""
@@ -122,30 +214,33 @@ class TodoList:
         
         # Get current month and year
         today = datetime.now().date()
-        current_month = today.month
-        current_year = today.year
+        if 'current_month' not in st.session_state:
+            st.session_state.current_month = today.month
+        if 'current_year' not in st.session_state:
+            st.session_state.current_year = today.year
+        
+        # Use session state for navigation
+        if st.button("Previous Month"):
+            if st.session_state.current_month == 1:
+                st.session_state.current_month = 12
+                st.session_state.current_year -= 1
+            else:
+                st.session_state.current_month -= 1
+
+        if st.button("Next Month"):
+            if st.session_state.current_month == 12:
+                st.session_state.current_month = 1
+                st.session_state.current_year += 1
+            else:
+                st.session_state.current_month += 1
         
         # Create month navigation
         col1, col2, col3 = st.columns([1, 2, 1])
-        with col1:
-            if st.button("Previous Month"):
-                if current_month == 1:
-                    current_month = 12
-                    current_year -= 1
-                else:
-                    current_month -= 1
         with col2:
-            st.subheader(f"{calendar.month_name[current_month]} {current_year}")
-        with col3:
-            if st.button("Next Month"):
-                if current_month == 12:
-                    current_month = 1
-                    current_year += 1
-                else:
-                    current_month += 1
+            st.subheader(f"{calendar.month_name[st.session_state.current_month]} {st.session_state.current_year}")
         
         # Get the calendar for the current month
-        cal = calendar.monthcalendar(current_year, current_month)
+        cal = calendar.monthcalendar(st.session_state.current_year, st.session_state.current_month)
         
         # Create a grid for the calendar
         st.write("")
@@ -161,7 +256,7 @@ class TodoList:
                     cols[i].write("")
                     continue
                 
-                current_date = datetime(current_year, current_month, day).date()
+                current_date = datetime(st.session_state.current_year, st.session_state.current_month, day).date()
                 day_tasks = [task for task in tasks if task["due_date"] == current_date]
                 
                 if day_tasks:
@@ -171,142 +266,162 @@ class TodoList:
                 else:
                     cols[i].write(day)
 
-    def show_list_view(self, tasks: List[Dict]) -> None:
+    def show_list_view(self, tasks: List[Dict], sort_by: str) -> None:
         """Display tasks in a list view with filtering and sorting."""
-        # Add filtering and sorting options
-        st.subheader("Filter and Sort Tasks")
-        col1, col2, col3 = st.columns(3)
-        
-        with col1:
-            selected_category = st.selectbox("Filter by Category", ["All"] + list(st.session_state.categories))
-            search_query = st.text_input("Search Tasks", "")
-        
-        with col2:
-            selected_priority = st.selectbox("Filter by Priority", ["All"] + self.PRIORITY_LEVELS)
-            selected_tags = st.multiselect("Filter by Tags", list(st.session_state.tags))
-        
-        with col3:
-            show_completed = st.checkbox("Show Completed Tasks", value=True)
-            sort_by = st.selectbox("Sort By", ["Due Date", "Priority", "Created Date"])
-
-        # Filter tasks
-        filtered_tasks = tasks
-
-        if selected_category != "All":
-            filtered_tasks = [task for task in filtered_tasks if task["category"] == selected_category]
-        if selected_priority != "All":
-            filtered_tasks = [task for task in filtered_tasks if task["priority"] == selected_priority]
-        if selected_tags:
-            filtered_tasks = [task for task in filtered_tasks if any(tag in task["tags"] for tag in selected_tags)]
-        if not show_completed:
-            filtered_tasks = [task for task in filtered_tasks if not task["completed"]]
-        if search_query:
-            search_lower = search_query.lower()
-            filtered_tasks = [
-                task for task in filtered_tasks 
-                if search_lower in task["title"].lower() 
-                or search_lower in task["description"].lower()
-                or search_lower in task["category"].lower()
-            ]
-
-        # Sort tasks
+        # Sort tasks based on the selected sorting method
         if sort_by == "Due Date":
-            filtered_tasks.sort(key=lambda x: (x["due_date"] is None, x["due_date"]))
+            tasks.sort(key=lambda x: (x["due_date"] is None, x["due_date"] or datetime.max.date()))
         elif sort_by == "Priority":
             priority_order = {"High": 0, "Medium": 1, "Low": 2}
-            filtered_tasks.sort(key=lambda x: priority_order[x["priority"]])
+            tasks.sort(key=lambda x: priority_order[x["priority"]])
         else:  # Created Date
-            filtered_tasks.sort(key=lambda x: x["created_at"])
+            tasks.sort(key=lambda x: x.get("created_at", datetime.max))
 
         st.subheader("=== Todo List ===")
-        for task in filtered_tasks:
+        for task in tasks:
             self.display_task(task)
 
     def display_task(self, task: Dict) -> None:
         """Display a single task with due date styling."""
-        from datetime import datetime, timedelta
-        
+        required_keys = {"id", "title", "description", "category", "due_date", "priority", "tags", "completed"}
+        if not required_keys.issubset(task.keys()):
+            st.error(f"Task {task.get('id', 'Unknown')} is missing required fields.")
+            return
+
+        # Validate due_date
+        due_date = task.get("due_date") # Use .get for safety
+        if due_date is not None and not isinstance(due_date, date):
+            st.error(f"Task {task['id']} has an invalid due_date: {due_date} (Type: {type(due_date)})")
+            # We might want to try converting if it's a string, but view_tasks should handle this.
+            # For display, if it's not a date or None after view_tasks, it's an error.
+            return # Stop displaying this task if date is invalid
+
         col1, col2, col3 = st.columns([1, 10, 1])
-        
+
         with col1:
-            check_class = "task-complete" if task["completed"] else "task-incomplete"
-            if task["completed"]:
-                st.markdown(f'<div class="{check_class}">✓</div>', unsafe_allow_html=True)
-            else:
-                if st.button("✓", key=f"complete_{task['id']}", help="Click to mark as completed"):
-                    self.mark_completed(task['id'])
-                    st.experimental_rerun()
-            if st.button("🗑️", key=f"delete_{task['id']}", help="Delete task"):
-                self.delete_task(task['id'])
-        
-        with col2:
-            priority_color = {
-                "High": "🔴",
-                "Medium": "🟡",
-                "Low": "🟢"
-            }
-            
-            # Add due date styling
-            due_date_style = ""
-            if not task["completed"] and task["due_date"]:
-                today = datetime.now().date()
-                due_date = task["due_date"]
-                if due_date < today:
-                    due_date_style = "overdue"
-                elif due_date == today:
-                    due_date_style = "due-today"
-                elif (due_date - today).days <= 3:
-                    due_date_style = "due-soon"
-            
-            title_style = "text-decoration: line-through; color: #808080;" if task["completed"] else ""
-            st.markdown(
-                f"{priority_color[task['priority']]} <span style='{title_style}'>**{task['id']}. {task['title']}**</span>",
-                unsafe_allow_html=True
+            # Use unique keys for each button based on task ID and action
+            complete_key = f"complete_{task['id']}"
+            delete_key = f"delete_{task['id']}"
+
+            # Always display the checkbox; its 'value' determines checked/unchecked state
+            is_completed = st.checkbox(
+                f"Complete task {task['id']}",  # Add descriptive label
+                value=task["completed"],
+                key=f"complete_{task['id']}",
+                on_change=self.toggle_task_completion, # Ensure correct callback
+                args=(task['id'], task["completed"]), # Pass ID and current status
+                help="Mark as Incomplete" if task["completed"] else "Mark as Complete", # Added tooltip
+                label_visibility="collapsed" # Hide the label visually
             )
-            st.markdown(f"**Category:** {task['category']} | **Priority:** {task['priority']}")
+
+            if st.button("🗑️", key=delete_key, help="Delete task", use_container_width=True):
+                self.delete_task(task['id'])
+
+        with col2:
+            priority_icon_map = {"High": "🔴", "Medium": "🟡", "Low": "🟢"}
+            priority_icon = priority_icon_map.get(task["priority"], "⚪️") # Safely get icon, default to white circle
+            due_date_style = self._get_due_date_style(due_date, task["completed"]) # Use validated due_date
+            title_style = "text-decoration: line-through;" if task["completed"] else ""
+
+            st.markdown(f"{priority_icon} <span style='{title_style}'>{task['title']}</span>", unsafe_allow_html=True)
             if task["description"]:
-                description_style = "color: #808080;" if task["completed"] else ""
-                st.markdown(f"<span style='{description_style}'>Description: {task['description']}</span>", unsafe_allow_html=True)
+                st.markdown(f"*{task['description']}*")
+            st.markdown(f"**Category:** {task['category']} | **Priority:** {task['priority']}")
             if task["due_date"]:
-                st.markdown(f"<span class='{due_date_style}'>Due: {task['due_date'].strftime('%Y-%m-%d')}</span>", unsafe_allow_html=True)
-            if task["recurrence"] != "None":
-                recurrence_style = "color: #808080;" if task["completed"] else ""
-                st.markdown(f"<span style='{recurrence_style}'>Recurrence: {task['recurrence']}</span>", unsafe_allow_html=True)
+                st.markdown(f"<span class='{due_date_style}'>Due: {task['due_date']}</span>", unsafe_allow_html=True)
             if task["tags"]:
-                tags_style = "color: #808080;" if task["completed"] else ""
-                st.markdown(f"<span style='{tags_style}'>Tags: " + ", ".join([f"`{tag}`" for tag in task["tags"]]) + "</span>", unsafe_allow_html=True)
-            created_style = "color: #808080;" if task["completed"] else ""
-            st.markdown(f"<span style='{created_style}'>Created: {task['created_at'].strftime('%Y-%m-%d %H:%M:%S')}</span>", unsafe_allow_html=True)
-        
+                st.markdown(f"**Tags:** {', '.join(task['tags'])}")
+
         with col3:
-            if not task["completed"] and st.button("✏️", key=f"edit_{task['id']}", help="Edit task"):
-                self.show_edit_form(task)
-        st.divider()
+            edit_key = f"edit_{task['id']}"
+            if st.button("✏️", key=edit_key, help="Edit task", use_container_width=True):
+                st.session_state.editing_task_id = task['id']
+                st.rerun() # Rerun to display the form immediately
+
+        # Show edit form BELOW the columns if this task is being edited
+        if st.session_state.get("editing_task_id") == task["id"]:
+            self.show_edit_form(task)
+
+    def _get_due_date_style(self, due_date: Optional[date], completed: bool) -> str:
+        """Return CSS style for due date based on urgency."""
+        # Check if due_date is valid before calculating style
+        if due_date is None:
+            return "" # No style for None
+        elif isinstance(due_date, date):
+            pass # Valid date object
+        else:
+            # If it's not None or date, something is wrong (conversion should have happened)
+            st.error(f"Invalid due_date type for styling: {type(due_date)}")
+            return "" # Return empty style on error
+
+        today = date.today()
+        delta = (due_date - today).days
+        
+        if completed:
+            return ""
+        elif delta < 0:
+            return "color: #ff4b4b; font-weight: bold;"  # Overdue
+        elif delta == 0:
+            return "color: #ffa500; font-weight: bold;"  # Due today
+        elif delta <= 3:
+            return "color: #f4c430;"  # Due soon
+        return ""
 
     def show_edit_form(self, task: Dict) -> None:
         """Show form to edit a task."""
-        with st.form(f"edit_form_{task['id']}"):
-            st.subheader(f"Edit Task {task['id']}")
+        with st.form(key=f"edit_task_{task['id']}"):
             new_title = st.text_input("Title", value=task["title"])
-            new_description = st.text_area("Description", value=task["description"])
-            new_category = st.selectbox("Category", st.session_state.categories, 
-                                      index=st.session_state.categories.index(task["category"]))
-            new_priority = st.selectbox("Priority", self.PRIORITY_LEVELS,
-                                      index=self.PRIORITY_LEVELS.index(task["priority"]))
-            new_due_date = st.date_input("Due Date", value=task["due_date"] if task["due_date"] else date.today())
-            new_recurrence = st.selectbox("Recurrence", self.RECURRENCE_OPTIONS,
-                                        index=self.RECURRENCE_OPTIONS.index(task["recurrence"]))
-            
-            # Tag input with autocomplete
-            new_tags = st.multiselect("Tags", list(st.session_state.tags), default=task["tags"])
-            new_tag = st.text_input("Add New Tag")
-            
-            if st.form_submit_button("Save Changes"):
-                if new_tag:
-                    new_tags.append(new_tag)
-                self.edit_task(task["id"], new_title, new_description, new_category, 
-                             new_due_date, new_priority, new_tags, new_recurrence)
-                st.experimental_rerun()
+            new_description = st.text_area("Description", value=task.get("description", ""))
+            new_category = st.text_input("Category", value=task.get("category", ""))
+            current_priority = task["priority"]
+            default_priority_index = 0 # Default to first item
+            if current_priority in self.PRIORITY_LEVELS:
+                default_priority_index = self.PRIORITY_LEVELS.index(current_priority)
+            elif "Medium" in self.PRIORITY_LEVELS: # Fallback to Medium if possible
+                default_priority_index = self.PRIORITY_LEVELS.index("Medium")
+
+            new_priority = st.selectbox("Priority", options=self.PRIORITY_LEVELS, index=default_priority_index)
+
+            # Get current due date, handle None
+            current_due_date = task.get("due_date")
+            new_due_date = st.date_input("Due Date (optional)", value=current_due_date if isinstance(current_due_date, date) else None)
+
+            # Safely get recurrence, defaulting to 'None' if not present
+            current_recurrence = task.get('recurrence', 'None')
+            # Ensure the default value exists in the options before finding the index
+            try:
+                recurrence_index = self.RECURRENCE_OPTIONS.index(current_recurrence)
+            except ValueError:
+                st.warning(f"Recurrence value '{current_recurrence}' not in options. Defaulting to 'None'.")
+                recurrence_index = self.RECURRENCE_OPTIONS.index('None') # Default to 'None'
+
+            new_recurrence = st.selectbox(
+                "Recurrence", 
+                options=self.RECURRENCE_OPTIONS, 
+                index=recurrence_index
+            ) 
+            new_tags = st.text_input("Tags (comma-separated)", value=", ".join(task.get("tags", [])), key=f"tags_{task['id']}")
+
+            submit_button = st.form_submit_button("Update Task")
+            if submit_button:
+                if new_tags:
+                    tags = [tag.strip() for tag in new_tags.split(",")]
+                else:
+                    tags = []
+                self.edit_task(
+                    task["id"],
+                    new_title,
+                    new_description,
+                    new_category,
+                    new_due_date,
+                    new_priority,
+                    tags,
+                    new_recurrence
+                )
+                # Update tasks in session state
+                st.session_state.tasks = self.db.get_tasks(self.user_id)
+                # Clear editing state
+                st.session_state.editing_task_id = None
 
     def process_recurring_tasks(self) -> None:
         """Process recurring tasks and create new instances if needed."""
@@ -331,6 +446,16 @@ class TodoList:
                     new_tasks.append(new_task)
         
         st.session_state.tasks.extend(new_tasks)
+
+    def get_tasks(self, user_id: int) -> List[Dict]:
+        tasks = self.db.get_tasks(user_id)
+        # Perform type logging for debugging
+        logger.debug(f"Retrieved tasks for user {user_id}: {tasks}")
+        for task in tasks:
+            for key, value in task.items():
+                logger.debug(f"Task ID: {task['id']}, Field: {key}, Type: {type(value)}")
+            # Date conversion is now handled reliably in view_tasks
+        return tasks
 
 def login_page():
     """Display the login page."""
@@ -360,15 +485,16 @@ def login_page():
                         st.session_state.user_id = user_id
                         st.session_state.username = user["username"]
                         st.session_state.email = user["email"]
+                        st.session_state.authenticated = True
                         st.success("Login successful!")
-                        st.rerun()  # This will trigger a rerun and show the main app
+                        st.rerun()  # Trigger a rerun to immediately reflect the login
                     else:
                         st.error("User not found")
                 else:
                     st.error("Invalid username/email or password")
             except Exception as e:
                 st.error(f"An error occurred during login: {str(e)}")
-    
+
     with tab2:
         st.subheader("Register")
         new_username = st.text_input("Username", key="register_username")
@@ -401,12 +527,12 @@ def login_page():
         st.subheader("Reset Password")
         
         # Check if we're in the reset password flow
-        reset_token = st.experimental_get_query_params().get("token", [None])[0]
+        reset_token = st.query_params.get("token", [None])[0]
         
         if reset_token:
             # Show password reset form
             new_password = st.text_input("New Password", type="password", key="reset_new_password")
-            confirm_password = st.text_input("Confirm New Password", type="password", key="reset_confirm_password")
+            confirm_password = st.text_input("Confirm New Password", type="password")
             
             if st.button("Reset Password"):
                 if not new_password or not confirm_password:
@@ -420,7 +546,8 @@ def login_page():
                 try:
                     if st.session_state.db.reset_password(reset_token, new_password):
                         st.success("Password reset successful! Please login with your new password.")
-                        st.experimental_set_query_params()  # Clear the token from URL
+                        st.set_query_params()  # Clear the token from URL
+                        st.info("If the reset link is still visible, please refresh the page.")
                     else:
                         st.error("Invalid or expired reset link. Please request a new one.")
                 except Exception as e:
@@ -439,7 +566,7 @@ def login_page():
                     if token:
                         # In a real app, you would send an email here
                         # For now, we'll just show the reset link
-                        reset_url = f"{st.experimental_get_query_params().get('base_url', [''])[0]}/?token={token}"
+                        reset_url = f"{st.query_params.get('base_url', [''])[0]}/?token={token}"
                         st.success(f"Password reset link has been sent to {email}")
                         st.info(f"Reset Link: {reset_url}")
                         st.warning("Note: In a production environment, this link would be sent via email.")
@@ -449,6 +576,8 @@ def login_page():
                     st.error(f"An error occurred while creating reset token: {str(e)}")
 
 def main():
+    st.session_state.setdefault("filter_show_completed", True)
+
     """Main function to run the todo list application."""
     # Initialize database in session state if not already initialized
     if 'db' not in st.session_state:
@@ -456,36 +585,42 @@ def main():
             st.session_state.db = Database()
             st.success("Database initialized successfully")
         except Exception as e:
-            st.error(f"Failed to initialize database: {str(e)}")
-            st.stop()  # Stop the app if database initialization fails
+            st.error(f"An error occurred: {str(e)}")
+            st.error("Please try again.")
+            st.stop()
+
+    if 'authenticated' not in st.session_state:
+        st.session_state.authenticated = False
+    if 'tasks' not in st.session_state:
+        st.session_state.tasks = []
+    if 'editing_task_id' not in st.session_state:
+        st.session_state.editing_task_id = None
 
     # Check if user is logged in
-    if 'user_id' not in st.session_state:
+    if not st.session_state.authenticated:
         login_page()
         return
 
-    # Clear the page and show the main app
-    st.empty()  # Clear the login page
-    
+    # Main app content
     try:
         # Get user details to ensure they still exist
         user = st.session_state.db.get_user_by_id(st.session_state.user_id)
         if not user:
             st.error("User not found. Please login again.")
-            del st.session_state.user_id
-            del st.session_state.username
-            del st.session_state.email
-            st.rerun()
+            st.session_state.authenticated = False
+            st.session_state.pop('user_id', None)
+            st.session_state.pop('username', None)
+            st.session_state.pop('email', None)
             return
             
         st.title(f"Todo List App - Welcome {user['username']}!")
         
         # Add logout button
         if st.sidebar.button("Logout"):
-            del st.session_state.user_id
-            del st.session_state.username
-            del st.session_state.email
-            st.rerun()
+            st.session_state.authenticated = False
+            st.session_state.pop('user_id', None)
+            st.session_state.pop('username', None)
+            st.session_state.pop('email', None)
             return
 
         todo_list = TodoList(st.session_state.db, st.session_state.user_id)
@@ -525,7 +660,6 @@ def main():
                         tags.append(new_tag)
                     todo_list.add_task(title, description, category, due_date, priority, tags, recurrence)
                     clear_form()
-                    st.rerun()
                 else:
                     st.error("Task title is required!")
 
@@ -535,11 +669,13 @@ def main():
         todo_list.view_tasks()
     except Exception as e:
         st.error(f"An error occurred: {str(e)}")
-        st.error("Please try logging in again.")
-        del st.session_state.user_id
-        del st.session_state.username
-        del st.session_state.email
-        st.rerun()
+        st.error("Please check the console for detailed error information.")
+        traceback.print_exc()
+        # Keep the logout logic if needed, or comment it out during debugging
+        st.session_state.authenticated = False
+        st.session_state.pop('user_id', None)
+        st.session_state.pop('username', None)
+        st.session_state.pop('email', None)
 
 if __name__ == "__main__":
     main()
